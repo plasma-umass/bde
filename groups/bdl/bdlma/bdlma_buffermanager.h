@@ -1,247 +1,12 @@
-// bdlma_buffermanager.h                                              -*-C++-*-
+#pragma once
 
-// ----------------------------------------------------------------------------
-//                                   NOTICE
-//
-// This component is not up to date with current BDE coding standards, and
-// should not be used as an example for new development.
-// ----------------------------------------------------------------------------
+#ifndef SHIM_BUFFERMANAGER_HPP
+#define SHIM_BUFFERMANAGER_HPP
 
-#ifndef INCLUDED_BDLMA_BUFFERMANAGER
-#define INCLUDED_BDLMA_BUFFERMANAGER
-
-#include <bsls_ident.h>
-BSLS_IDENT("$Id: $")
-
-//@PURPOSE: Provide a memory manager that manages an external buffer.
-//
-//@CLASSES:
-//  bdlma::BufferManager: memory manager that manages an external buffer
-//
-//@SEE_ALSO: bdlma_bufferimputil, bdlma_bufferedsequentialallocator
-//
-//@DESCRIPTION: This component provides a memory manager ("buffer manager"),
-// 'bdlma::BufferManager', that dispenses heterogeneous memory blocks (of
-// varying, user-specified sizes) from an external buffer.  A 'BufferManager'
-// has a similar interface to a sequential pool in that the two methods
-// 'allocate' and 'release' are provided.
-//
-// In addition to the 'allocate' method, a less safe but faster variation,
-// 'allocateRaw', is provided to support memory allocation: If there is
-// insufficient memory remaining in the buffer to satisfy an allocation
-// request, 'allocate' will return 0 while 'allocateRaw' will result in
-// undefined behavior.
-//
-// The behavior of 'allocate' and 'allocateRaw' illustrates the main difference
-// between this buffer manager and a sequential pool.  Once the external buffer
-// runs out of memory, the buffer manager does not self-replenish, whereas a
-// sequential pool will do so.
-//
-// The 'release' method resets the buffer manager such that the memory within
-// the entire external buffer will be made available for subsequent
-// allocations.  Note that individually allocated memory blocks cannot be
-// separately deallocated.
-//
-// 'bdlma::BufferManager' is typically used for fast and efficient memory
-// allocation, when the user knows in advance the maximum amount of memory
-// needed.
-//
-///Usage
-///-----
-// Suppose that we need to detect whether there are at least 'n' duplicates
-// within an array of integers.  Furthermore, suppose that speed is a concern
-// and we need the fastest possible implementation.  A natural solution will be
-// to use a hash table.  To further optimize for speed, we can use a custom
-// memory manager, such as 'bdlma::BufferManager', to speed up memory
-// allocations.
-//
-// First, let's define the structure of a node inside our custom hash table
-// structure:
-//..
-//  struct my_Node {
-//      // This struct represents a node within a hash table.
-//
-//      // DATA
-//      int      d_value;   // integer value this node holds
-//      int      d_count;   // number of occurrences of this integer value
-//      my_Node *d_next_p;  // pointer to the next node
-//
-//      // CREATORS
-//      my_Node(int value, my_Node *next);
-//          // Create a node having the specified 'value' that refers to the
-//          // specified 'next' node.
-//  };
-//
-//  // CREATORS
-//  my_Node::my_Node(int value, my_Node *next)
-//  : d_value(value)
-//  , d_count(1)
-//  , d_next_p(next)
-//  {
-//  }
-//..
-// Note that 'sizeof(my_Node) == 12' when compiled in 32-bit mode, and
-// 'sizeof(my_Node) == 16' when compiled in 64-bit mode.  This difference
-// affects the amount of memory used under different alignment strategies (see
-// 'bsls_alignment' for more details on alignment strategies).
-//
-// We can then define the structure of our specialized hash table used for
-// integer counting:
-//..
-//  class my_IntegerCountingHashTable {
-//      // This class represents a hash table that is used to keep track of the
-//      // number of occurrences of various integers.  Note that this is a
-//      // highly specialized class that uses a 'bdlma::BufferManager' with
-//      // sufficient memory for memory allocations.
-//
-//      // DATA
-//      my_Node              **d_nodeArray;  // array of 'my_Node' pointers
-//
-//      int                    d_size;       // size of the node array
-//
-//      bdlma::BufferManager  *d_buffer;     // buffer manager (held, not
-//                                           // owned)
-//
-//    public:
-//      // CLASS METHODS
-//      static int calculateBufferSize(int tableLength, int numNodes);
-//          // Return the memory required by a 'my_IntegerCountingHashTable'
-//          // that has the specified 'tableLength' and 'numNodes'.
-//
-//      // CREATORS
-//      my_IntegerCountingHashTable(int size, bdlma::BufferManager *buffer);
-//          // Create a hash table of the specified 'size', using the specified
-//          // 'buffer' to supply memory.  The behavior is undefined unless
-//          // '0 < size', 'buffer' is non-zero, and 'buffer' has sufficient
-//          // memory to support all memory allocations required.
-//
-//      // ...
-//
-//      // MANIPULATORS
-//      int insert(int value);
-//          // Insert the specified 'value' with a count of 1 into this hash
-//          // table if 'value' does not currently exist in the hash table, and
-//          // increment the count for 'value' otherwise.  Return the number of
-//          // occurrences of 'value' in this hash table.
-//
-//      // ...
-//  };
-//..
-// The implementation of the rest of 'my_IntegerCountingHashTable' is elided as
-// the class method 'calculateBufferSize', constructor, and the 'insert' method
-// alone are sufficient to illustrate the use of 'bdlma::BufferManager':
-//..
-//  // CLASS METHODS
-//  int my_IntegerCountingHashTable::calculateBufferSize(int tableLength,
-//                                                       int numNodes)
-//  {
-//      return static_cast<int>(tableLength * sizeof(my_Node *)
-//                            + numNodes * sizeof(my_Node)
-//                            + bsls::AlignmentUtil::BSLS_MAX_ALIGNMENT);
-//  }
-//..
-// Note that, in case the allocated buffer is not aligned, the size calculation
-// includes a "fudge" factor equivalent to the maximum alignment requirement of
-// the platform.
-//..
-//  // CREATORS
-//  my_IntegerCountingHashTable::my_IntegerCountingHashTable(
-//                                                int                   size,
-//                                                bdlma::BufferManager *buffer)
-//  : d_size(size)
-//  , d_buffer(buffer)
-//  {
-//      // 'd_buffer' must have sufficient memory to satisfy the allocation
-//      // request (as specified by the constructor's contract).
-//
-//      d_nodeArray = static_cast<my_Node **>(
-//                             d_buffer->allocate(d_size * sizeof(my_Node *)));
-//
-//      bsl::memset(d_nodeArray, 0, d_size * sizeof(my_Node *));
-//  }
-//
-//  // MANIPULATORS
-//  int my_IntegerCountingHashTable::insert(int value)
-//  {
-//      // Naive hash function using only mod.
-//
-//      const int hashValue = value % d_size;
-//      my_Node **tmp       = &d_nodeArray[hashValue];
-//
-//      while (*tmp) {
-//          if ((*tmp)->d_value != value) {
-//              tmp = &((*tmp)->d_next_p);
-//          }
-//          else {
-//              return ++((*tmp)->d_count);                           // RETURN
-//          }
-//      }
-//
-//      // 'allocate' does not trigger dynamic memory allocation.  Therefore,
-//      // we don't have to worry about exceptions and can use placement 'new'
-//      // directly with 'allocate'.  'd_buffer' must have sufficient memory to
-//      // satisfy the allocation request (as specified by the constructor's
-//      // contract).
-//
-//      *tmp = new(d_buffer->allocate(sizeof(my_Node))) my_Node(value, *tmp);
-//
-//      return 1;
-//  }
-//..
-// Note that 'bdlma::BufferManager' is used to allocate memory blocks of
-// heterogeneous sizes.  In the constructor, memory is allocated for the node
-// array.  In 'insert', memory is allocated for the nodes.
-//
-// Finally, in the following 'detectNOccurrences' function, we can use the hash
-// table class to detect whether any integer value occurs at least 'n' times
-// within a specified array:
-//..
-//  bool detectNOccurrences(int n, const int *array, int length)
-//      // Return 'true' if any integer value in the specified 'array' having
-//      // the specified 'length' appears at least the specified 'n' times, and
-//      // 'false' otherwise.
-//  {
-//      const int MAX_SIZE = my_IntegerCountingHashTable::
-//                                         calculateBufferSize(length, length);
-//..
-// We then allocate an external buffer to be used by 'bdlma::BufferManager'.
-// Normally, this buffer will be created on the program stack if we know the
-// length in advance (for example, if we specify in the contract of this
-// function that we only handle arrays having a length of up to 10,000
-// integers).  However, to make this function more general, we decide to
-// allocate the memory dynamically.  This approach is still much more efficient
-// than using the default allocator, say, to allocate memory for individual
-// nodes within 'insert', since we need only a single dynamic allocation,
-// versus separate dynamic allocations for every single node:
-//..
-//      bslma::Allocator *allocator = bslma::Default::defaultAllocator();
-//      char *buffer = static_cast<char *>(allocator->allocate(MAX_SIZE));
-//..
-// We use a 'bslma::DeallocatorGuard' to automatically deallocate the buffer
-// when the function ends:
-//..
-//      bslma::DeallocatorGuard<bslma::Allocator> guard(buffer, allocator);
-//
-//      bdlma::BufferManager bufferManager(buffer, MAX_SIZE);
-//      my_IntegerCountingHashTable table(length, &bufferManager);
-//
-//      while (--length >= 0) {
-//          if (n == table.insert(array[length])) {
-//              return true;                                          // RETURN
-//          }
-//      }
-//
-//      return false;
-//  }
-//..
-// Note that the calculation of 'MAX_SIZE' assumes natural alignment.  If
-// maximum alignment is used instead, a larger buffer is needed since each node
-// object will then be maximally aligned, which takes up 16 bytes each instead
-// of 12 bytes on a 32-bit architecture.  On a 64-bit architecture, there will
-// be no savings using natural alignment since the size of a node will be 16
-// bytes regardless.
-
-#include <bdlscm_version.h>
+#include <cstdlib>
+#include <cstdint>
+#include <cstdlib>
+#include <cstdio>
 
 #include <bsls_alignment.h>
 #include <bsls_alignmentutil.h>
@@ -251,6 +16,10 @@ BSLS_IDENT("$Id: $")
 #include <bsls_review.h>
 #include <bsls_types.h>
 
+#include <bdlma_simpool.h>
+
+#include <stdio.h>
+
 namespace BloombergLP {
 namespace bdlma {
 
@@ -258,17 +27,14 @@ namespace bdlma {
                            // class BufferManager
                            // ===================
 
-class BufferManager {
-    // This class implements a buffer manager that dispenses heterogeneous
-    // blocks of memory (of varying, user-specified sizes) from an external
-    // buffer whose address and size are optionally supplied at construction.
-    // If an allocation request exceeds the remaining free memory space in the
-    // external buffer, the allocation request returns 0 if 'allocate' is used,
-    // or results in undefined behavior if 'allocateRaw' is used.  Note that in
-    // no event will the buffer manager attempt to deallocate the external
-    // buffer.
+  class BufferManager {
+  private:
+    // NOT IMPLEMENTED
+    BufferManager(const BufferManager&);
+    BufferManager& operator=(const BufferManager&);
 
-    // DATA
+  // Below members are here only to preserve compatibility.
+
     char                   *d_buffer_p;          // external buffer (held, not
                                                  // owned)
 
@@ -284,11 +50,8 @@ class BufferManager {
     unsigned char           d_alignmentOrMask;   // a mask used during the
                                                  // alignment calculation
 
-  private:
-    // NOT IMPLEMENTED
-    BufferManager(const BufferManager&);
-    BufferManager& operator=(const BufferManager&);
-
+  SimPool _allocVector;
+  
   public:
     // CREATORS
     explicit
@@ -343,7 +106,10 @@ class BufferManager {
         // effect as the 'deleteObjectRaw' method (since no deallocation is
         // involved), and exists for consistency with a pool interface.
 
-    bsls::Types::size_type expand(void *address, bsls::Types::size_type size);
+    bsls::Types::size_type expand(void *address, bsls::Types::size_type size)
+    {
+        return size;
+    }
         // Increase the amount of memory allocated at the specified 'address'
         // from the original 'size' (in bytes) to also include the maximum
         // amount remaining in the buffer.  Return the amount of memory
@@ -380,9 +146,12 @@ class BufferManager {
         // of this object with no effect on the outstanding allocated memory
         // blocks.
 
-    bsls::Types::size_type truncate(void                   *address,
+    bsls::Types::size_type truncate(void                   */*address*/,
                                     bsls::Types::size_type  originalSize,
-                                    bsls::Types::size_type  newSize);
+                                    bsls::Types::size_type  /*newSize*/)
+    {
+        return originalSize;
+    }
         // Reduce the amount of memory allocated at the specified 'address' of
         // the specified 'originalSize' (in bytes) to the specified 'newSize'
         // (in bytes).  Return 'newSize' after truncating, or 'originalSize' if
@@ -425,6 +194,7 @@ class BufferManager {
         // bytes) after taking the alignment strategy into consideration, and
         // 'false' otherwise.  The behavior is undefined unless '0 < size', and
         // this object is currently managing a buffer.
+
 };
 
 // ============================================================================
@@ -439,14 +209,14 @@ class BufferManager {
 inline
 BufferManager::BufferManager(bsls::Alignment::Strategy strategy)
 : d_buffer_p(0)
-, d_bufferSize(0)
+, d_bufferSize(UINT32_MAX)
 , d_cursor(0)
 , d_alignmentAndMask(  strategy != bsls::Alignment::BSLS_MAXIMUM
                      ? bsls::AlignmentUtil::BSLS_MAX_ALIGNMENT - 1
                      : 0)
 , d_alignmentOrMask(  strategy != bsls::Alignment::BSLS_BYTEALIGNED
                     ? bsls::AlignmentUtil::BSLS_MAX_ALIGNMENT
-                    : 1)
+		      : 1)
 {
 }
 
@@ -462,59 +232,28 @@ BufferManager::BufferManager(char                      *buffer,
                      : 0)
 , d_alignmentOrMask(  strategy != bsls::Alignment::BSLS_BYTEALIGNED
                     ? bsls::AlignmentUtil::BSLS_MAX_ALIGNMENT
-                    : 1)
+		      : 1)
+,  _allocVector (bufferSize)
 {
-    BSLS_ASSERT(buffer);
-    BSLS_ASSERT(0 < bufferSize);
 }
 
 inline
 BufferManager::~BufferManager()
 {
-    BSLS_ASSERT(0 <= d_cursor);
-    BSLS_ASSERT(static_cast<bsls::Types::size_type>(d_cursor) <= d_bufferSize);
-    BSLS_ASSERT(   (0 != d_buffer_p && 0 <  d_bufferSize)
-                     || (0 == d_buffer_p && 0 == d_bufferSize));
+  release();
 }
 
 // MANIPULATORS
 inline
 void *BufferManager::allocate(bsls::Types::size_type size)
 {
-    BSLS_ASSERT_SAFE(0 <= d_cursor);
-    BSLS_ASSERT_SAFE(static_cast<bsls::Types::size_type>(d_cursor)
-                                                              <= d_bufferSize);
-
-    char *address = d_buffer_p + d_cursor;
-
-    int offset = calculateAlignmentOffsetFromSize(address, size);
-
-    bsls::Types::IntPtr cursor = d_cursor + offset + size;
-    if (   BSLS_PERFORMANCEHINT_PREDICT_LIKELY(
-                   static_cast<bsls::Types::size_type>(cursor) <= d_bufferSize)
-        && BSLS_PERFORMANCEHINT_PREDICT_LIKELY(0 < size)) {
-        d_cursor = cursor;
-        return address + offset;                                      // RETURN
-    }
-
-    return 0;
+  return _allocVector.allocate(size);
 }
 
 inline
 void *BufferManager::allocateRaw(bsls::Types::size_type size)
 {
-    BSLS_ASSERT_SAFE(0 <  size);
-    BSLS_ASSERT_SAFE(0 <= d_cursor);
-    BSLS_ASSERT_SAFE(static_cast<bsls::Types::size_type>(d_cursor)
-                                                              <= d_bufferSize);
-    BSLS_ASSERT_SAFE(d_buffer_p);
-
-    char *address = d_buffer_p + d_cursor;
-
-    int offset = calculateAlignmentOffsetFromSize(address, size);
-
-    d_cursor = d_cursor + offset + size;
-    return address + offset;
+  return _allocVector.allocate(size);
 }
 
 template <class TYPE>
@@ -527,6 +266,7 @@ void BufferManager::deleteObjectRaw(const TYPE *object)
 #else
         const_cast<TYPE *>(object)->~TYPE();
 #endif
+	_allocVector.deallocate(reinterpret_cast<void*>(const_cast<TYPE*>(object)));
     }
 }
 
@@ -548,22 +288,22 @@ char *BufferManager::replaceBuffer(char                   *newBuffer,
     d_buffer_p      = newBuffer;
     d_bufferSize    = newBufferSize;
     d_cursor        = 0;
-
+    _allocVector.resetSize(newBufferSize);
     return oldBuffer;
 }
 
 inline
 void BufferManager::release()
 {
-    d_cursor = 0;
+    _allocVector.release();
 }
 
 inline
 void BufferManager::reset()
 {
-    d_buffer_p   = 0;
-    d_bufferSize = 0;
-    d_cursor     = 0;
+  _allocVector.rewind();
+  d_buffer_p = 0;
+  d_cursor = 0;
 }
 
 // ACCESSORS
@@ -627,19 +367,3 @@ bool BufferManager::hasSufficientCapacity(bsls::Types::size_type size) const
 }  // close enterprise namespace
 
 #endif
-
-// ----------------------------------------------------------------------------
-// Copyright 2016 Bloomberg Finance L.P.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// ----------------------------- END-OF-FILE ----------------------------------
